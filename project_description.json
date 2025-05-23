@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "weather-station",
-    "project_version":    "1",
+    "project_version":    "c774f4a-dirty",
     "project_path":       "C:/Users/jerem/IDFProjects/weather-station",
     "idf_path":           "C:/Users/jerem/esp/v5.4.1/esp-idf",
     "build_dir":          "C:/Users/jerem/IDFProjects/weather-station",
