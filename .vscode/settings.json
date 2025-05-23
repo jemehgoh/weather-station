@@ -11,5 +11,8 @@
         "IDF_TARGET": "esp32s2"
     },
     "idf.flashType": "UART",
-    "idf.portWin": "COM6"
+    "idf.portWin": "COM6",
+    "files.associations": {
+        "stdio.h": "c"
+    }
 }
