@@ -3,6 +3,8 @@
 #include "bme280_defs.h"
 #include "bme280.h"
 #include "driver/i2c_master.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 // Function to write data to BME280 registers
 static int8_t bme280_set_data(uint8_t reg_addr, const uint8_t *reg_data, uint32_t len, void *intf_ptr) {
@@ -39,6 +41,31 @@ static void bme280_delay(uint32_t period, void *intf_ptr) {
     for (uint32_t i = 0; i < delay_cycles; i++);
 }
 
+i2c_master_dev_handle_t dev_handle;
+
+int8_t result;
+struct bme280_calib_data dummy_data;
+struct bme280_dev bme280_device;
+
+struct bme280_data sensor_data ={
+    .pressure = 0.0,
+    .temperature = 0.0,
+    .humidity = 0.0
+};
+
+// Task for getting data from the BME280
+void bme280_measure_task(void *pvParameter) {
+    while (1) {
+        bme280_get_sensor_data(BME280_ALL, &sensor_data, &bme280_device);
+
+        printf("%f\n", sensor_data.pressure);
+        printf("%f\n", sensor_data.temperature);
+        printf("%f\n", sensor_data.humidity);
+
+        vTaskDelay(240000000);
+    }
+}
+
 void app_main(void)
 {
     i2c_master_bus_config_t i2c_master_config = {
@@ -59,55 +86,50 @@ void app_main(void)
     .scl_speed_hz = 100000,
     };
 
-    i2c_master_dev_handle_t dev_handle;
     i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle);
 
-    int8_t result = 0;
-    struct bme280_calib_data dummy_data = 
-    {
-    .dig_t1 = 0,
-    .dig_t2 = 0,
-    .dig_t3 = 0,
-    .dig_p1 = 0,
-    .dig_p2 = 0,
-    .dig_p3 = 0,
-    .dig_p4 = 0,
-    .dig_p5 = 0,
-    .dig_p6 = 0,
-    .dig_p7 = 0,
-    .dig_p8 = 0,
-    .dig_p9 = 0,
-    .dig_h1 = 0,
-    .dig_h2 = 0,
-    .dig_h3 = 0,
-    .dig_h4 = 0,
-    .dig_h5 = 0,
-    .dig_h6 = 0,
-    .t_fine = 0
+    struct bme280_settings default_settings ={
+        .osr_p = 1,
+        .osr_t = 1,
+        .osr_h = 1,
+        .filter = 0,
+        .standby_time = 0,
     };
 
-    struct bme280_dev bme280_device = {
-        .chip_id = 0x00,
-        .intf = BME280_I2C_INTF,
-        .intf_ptr = dev_handle,
-        .intf_rslt = result,
-        .read = bme280_get_data,
-        .write = bme280_set_data,
-        .delay_us = bme280_delay,
-        .calib_data = dummy_data,
-    };
+    result = 0;
+    dummy_data.dig_t1 = 0;
+    dummy_data.dig_t2 = 0;
+    dummy_data.dig_t3 = 0;
+    dummy_data.dig_p1 = 0;
+    dummy_data.dig_p2 = 0;
+    dummy_data.dig_p3 = 0;
+    dummy_data.dig_p4 = 0;
+    dummy_data.dig_p5 = 0;
+    dummy_data.dig_p6 = 0;
+    dummy_data.dig_p7 = 0;
+    dummy_data.dig_p8 = 0;
+    dummy_data.dig_p9 = 0;
+    dummy_data.dig_h1 = 0;
+    dummy_data.dig_h2 = 0;
+    dummy_data.dig_h3 = 0;
+    dummy_data.dig_h4 = 0;
+    dummy_data.dig_h5 = 0;
+    dummy_data.dig_h6 = 0;
+    dummy_data.t_fine = 0;
+
+    bme280_device.chip_id = 0x00;
+    bme280_device.intf = BME280_I2C_INTF;
+    bme280_device.intf_ptr = dev_handle;
+    bme280_device.intf_rslt = result;
+    bme280_device.read = bme280_get_data;
+    bme280_device.write = bme280_set_data;
+    bme280_device.delay_us = bme280_delay;
+    bme280_device.calib_data = dummy_data;
 
     bme280_init(&bme280_device);
-    bme280_set_sensor_mode(BME280_POWERMODE_NORMAL, &bme280_device);
-    
-    struct bme280_data sensor_data ={
-        .pressure = 0.0,
-        .temperature = 0.0,
-        .humidity = 0.0
-    };
+    bme280_set_sensor_settings(BME280_SEL_ALL_SETTINGS, &default_settings, &bme280_device);
+    bme280_set_sensor_mode(BME280_POWERMODE_FORCED, &bme280_device);
 
-    bme280_get_sensor_data(BME280_ALL, &sensor_data, &bme280_device);
-    printf("%f\n", sensor_data.pressure);
-    printf("%f\n", sensor_data.temperature);
-    printf("%f\n", sensor_data.humidity);
+    xTaskCreate(bme280_measure_task, "measure task", 4096, NULL, 5, NULL);
+    while(1);
 }
