@@ -2,46 +2,49 @@
 #include <string.h>
 #include "bme280_defs.h"
 #include "bme280.h"
+#include "bme280_funs.h"
 #include "driver/i2c_master.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "portmacro.h"
 
-// Function to write data to BME280 registers
-static int8_t bme280_set_data(uint8_t reg_addr, const uint8_t *reg_data, uint32_t len, void *intf_ptr) {
-    esp_err_t write_result = i2c_master_transmit((i2c_master_dev_handle_t)(intf_ptr), reg_data, 
-            len, -1);
-    if (write_result != ESP_OK) {
-        return 1;
-    }
+// // Function to write data to BME280 registers
+// static int8_t bme280_set_data(uint8_t reg_addr, const uint8_t *reg_data, uint32_t len, void *intf_ptr) {
+//     esp_err_t write_result = i2c_master_transmit((i2c_master_dev_handle_t)(intf_ptr), reg_data, 
+//             len, -1);
+//     if (write_result != ESP_OK) {
+//         return 1;
+//     }
 
-    return 0;
-}
+//     return 0;
+// }
 
-// Function to get register data from BME280
-static int8_t bme280_get_data(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *intf_ptr) {
-    esp_err_t request_result = i2c_master_transmit((i2c_master_dev_handle_t)(intf_ptr), &reg_addr, 
-            1, -1);
-    if (request_result != ESP_OK) {
-        return 1;
-    }
+// // Function to get register data from BME280
+// static int8_t bme280_get_data(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *intf_ptr) {
+//     esp_err_t request_result = i2c_master_transmit((i2c_master_dev_handle_t)(intf_ptr), &reg_addr, 
+//             1, -1);
+//     if (request_result != ESP_OK) {
+//         return 1;
+//     }
 
-    esp_err_t get_result = i2c_master_receive((i2c_master_dev_handle_t)(intf_ptr), reg_data, 
-            len, -1);
-    if (get_result != ESP_OK) {
-        return 1;
-    }
+//     esp_err_t get_result = i2c_master_receive((i2c_master_dev_handle_t)(intf_ptr), reg_data, 
+//             len, -1);
+//     if (get_result != ESP_OK) {
+//         return 1;
+//     }
 
-    // Return 0 if data read is successful
-    return 0;
-}
+//     // Return 0 if data read is successful
+//     return 0;
+// }
 
-// Delay function for BME280 - just polls CPU for the period.
-static void bme280_delay(uint32_t period, void *intf_ptr) {
-    uint32_t delay_cycles = period * 240;
-    for (uint32_t i = 0; i < delay_cycles; i++);
-}
+// // Delay function for BME280 - just polls CPU for the period.
+// static void bme280_delay(uint32_t period, void *intf_ptr) {
+//     uint32_t delay_cycles = period * 240;
+//     for (uint32_t i = 0; i < delay_cycles; i++);
+// }
 
-void app_main(void)
-{
-    i2c_master_bus_config_t i2c_master_config = {
+static void setup_i2c_master_dev(i2c_master_dev_handle_t *dev_handle) {
+        i2c_master_bus_config_t i2c_master_config = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .i2c_port = I2C_NUM_0,
         .scl_io_num = 5,
@@ -59,55 +62,79 @@ void app_main(void)
     .scl_speed_hz = 100000,
     };
 
-    i2c_master_dev_handle_t dev_handle;
-    i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle);
+    i2c_master_bus_add_device(bus_handle, &dev_cfg, dev_handle);
+}
 
-    int8_t result = 0;
-    struct bme280_calib_data dummy_data = 
-    {
-    .dig_t1 = 0,
-    .dig_t2 = 0,
-    .dig_t3 = 0,
-    .dig_p1 = 0,
-    .dig_p2 = 0,
-    .dig_p3 = 0,
-    .dig_p4 = 0,
-    .dig_p5 = 0,
-    .dig_p6 = 0,
-    .dig_p7 = 0,
-    .dig_p8 = 0,
-    .dig_p9 = 0,
-    .dig_h1 = 0,
-    .dig_h2 = 0,
-    .dig_h3 = 0,
-    .dig_h4 = 0,
-    .dig_h5 = 0,
-    .dig_h6 = 0,
-    .t_fine = 0
-    };
+// // Fills BME280 device struct
+// static void bme280_setup(struct bme280_dev *bme280_device, i2c_master_dev_handle_t dev_handle) {
+//     int8_t result = 0;
+//     struct bme280_calib_data dummy_data = {
+//         .dig_t1 = 0,
+//         .dig_t2 = 0,
+//         .dig_t3 = 0,
+//         .dig_p1 = 0,
+//         .dig_p2 = 0,
+//         .dig_p3 = 0,
+//         .dig_p4 = 0,
+//         .dig_p5 = 0,
+//         .dig_p6 = 0,
+//         .dig_p7 = 0,
+//         .dig_p8 = 0,
+//         .dig_p9 = 0,
+//         .dig_h1 = 0,
+//         .dig_h2 = 0,
+//         .dig_h3 = 0,
+//         .dig_h4 = 0,
+//         .dig_h5 = 0,
+//         .dig_h6 = 0,
+//         .t_fine = 0
+//     };
 
-    struct bme280_dev bme280_device = {
-        .chip_id = 0x00,
-        .intf = BME280_I2C_INTF,
-        .intf_ptr = dev_handle,
-        .intf_rslt = result,
-        .read = bme280_get_data,
-        .write = bme280_set_data,
-        .delay_us = bme280_delay,
-        .calib_data = dummy_data,
+//     bme280_device -> chip_id = 0x00;
+//     bme280_device -> intf = BME280_I2C_INTF;
+//     bme280_device -> intf_ptr = dev_handle;
+//     bme280_device -> intf_rslt = result;
+//     bme280_device -> read = bme280_get_data;
+//     bme280_device -> write = bme280_set_data;
+//     bme280_device -> delay_us = bme280_delay;
+//     bme280_device -> calib_data = dummy_data;
+// }
+
+i2c_master_dev_handle_t dev_handle;
+
+struct bme280_dev bme280_device;
+
+struct bme280_data sensor_data;
+
+// Task for getting data from the BME280
+void bme280_measure_task(void *pvParameter) {
+    while (1) {
+        bme280_get_sensor_data(BME280_ALL, &sensor_data, &bme280_device);
+
+        printf("%f\n", sensor_data.pressure);
+        printf("%f\n", sensor_data.temperature);
+        printf("%f\n", sensor_data.humidity);
+
+        vTaskDelay(1000/portTICK_PERIOD_MS);
+    }
+}
+
+void app_main(void)
+{
+    setup_i2c_master_dev(&dev_handle);
+    bme280_setup(&bme280_device, dev_handle);
+
+    struct bme280_settings default_settings ={
+        .osr_p = 1,
+        .osr_t = 1,
+        .osr_h = 1,
+        .filter = 0,
+        .standby_time = 0,
     };
 
     bme280_init(&bme280_device);
-    bme280_set_sensor_mode(BME280_POWERMODE_NORMAL, &bme280_device);
-    
-    struct bme280_data sensor_data ={
-        .pressure = 0.0,
-        .temperature = 0.0,
-        .humidity = 0.0
-    };
+    bme280_set_sensor_settings(BME280_SEL_ALL_SETTINGS, &default_settings, &bme280_device);
+    bme280_set_sensor_mode(BME280_POWERMODE_FORCED, &bme280_device);
 
-    bme280_get_sensor_data(BME280_ALL, &sensor_data, &bme280_device);
-    printf("%f\n", sensor_data.pressure);
-    printf("%f\n", sensor_data.temperature);
-    printf("%f\n", sensor_data.humidity);
+    xTaskCreate(bme280_measure_task, "measure task", 4096, NULL, 5, NULL);
 }
