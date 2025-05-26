@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "portmacro.h"
+#include "sgp30.h"
 
 // // Function to write data to BME280 registers
 // static int8_t bme280_set_data(uint8_t reg_addr, const uint8_t *reg_data, uint32_t len, void *intf_ptr) {
@@ -43,12 +44,14 @@
 //     for (uint32_t i = 0; i < delay_cycles; i++);
 // }
 
-static void setup_i2c_master_dev(i2c_master_dev_handle_t *dev_handle) {
-        i2c_master_bus_config_t i2c_master_config = {
+static void setup_i2c_master_dev(i2c_master_dev_handle_t *dev_handle, uint8_t port, uint8_t scl, 
+        uint8_t sda, uint8_t dev_address) {
+
+    i2c_master_bus_config_t i2c_master_config = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
-        .i2c_port = I2C_NUM_0,
-        .scl_io_num = 5,
-        .sda_io_num = 6,
+        .i2c_port = port,
+        .scl_io_num = scl,
+        .sda_io_num = sda,
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = true,
     };
@@ -58,7 +61,7 @@ static void setup_i2c_master_dev(i2c_master_dev_handle_t *dev_handle) {
 
     i2c_device_config_t dev_cfg = {
     .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-    .device_address = 0x76,
+    .device_address = dev_address,
     .scl_speed_hz = 100000,
     };
 
@@ -100,20 +103,57 @@ static void setup_i2c_master_dev(i2c_master_dev_handle_t *dev_handle) {
 //     bme280_device -> calib_data = dummy_data;
 // }
 
-i2c_master_dev_handle_t dev_handle;
+i2c_master_dev_handle_t bme_dev_handle;
+i2c_master_dev_handle_t sgp_dev_handle;
 
 struct bme280_dev bme280_device;
 
 struct bme280_data sensor_data;
 
+struct sgp30_data sgp_data;
+static volatile uint32_t tick_count = 0;
+
 // Task for getting data from the BME280
 void bme280_measure_task(void *pvParameter) {
     while (1) {
-        bme280_get_sensor_data(BME280_ALL, &sensor_data, &bme280_device);
+        if(bme280_get_sensor_data(BME280_ALL, &sensor_data, &bme280_device) == 0) {
+            printf("%f\n", sensor_data.pressure);
+            printf("%f\n", sensor_data.temperature);
+            printf("%f\n", sensor_data.humidity);
+        }
 
-        printf("%f\n", sensor_data.pressure);
-        printf("%f\n", sensor_data.temperature);
-        printf("%f\n", sensor_data.humidity);
+        vTaskDelay(1000/portTICK_PERIOD_MS);
+    }
+}
+
+void sgp30_measure_task(void *pvParameter) {
+    while (1) {
+        if (tick_count == 0) {
+            vTaskDelay(2/portTICK_PERIOD_MS);
+            uint8_t command[2] = IAQ_INIT_COMMAND;
+            sgp30_transmit_command(sgp_dev_handle, command);
+            vTaskDelay(10/portTICK_PERIOD_MS);
+            tick_count++;
+        } else if (tick_count < 16) {
+            uint8_t command[2] = MEASURE_IAQ_COMMAND;
+            sgp30_transmit_command(sgp_dev_handle, command);
+            vTaskDelay(12/portTICK_PERIOD_MS);
+            tick_count++;
+        } else {
+            uint8_t command[2] = MEASURE_IAQ_COMMAND;
+
+            if (sgp30_transmit_command(sgp_dev_handle, command) != ESP_OK) {
+                printf("Transmission failure");
+                continue;
+            }
+            vTaskDelay(12/portTICK_PERIOD_MS);
+            if (sgp30_receive_result(sgp_dev_handle, &sgp_data) != ESP_OK) {
+                printf("Read failure");
+                continue;
+            }
+            printf("CO2 concentration: %d\n", sgp_data.co2_eq);
+            printf("TVOC: %d\n", sgp_data.tvoc);
+        }
 
         vTaskDelay(1000/portTICK_PERIOD_MS);
     }
@@ -121,8 +161,8 @@ void bme280_measure_task(void *pvParameter) {
 
 void app_main(void)
 {
-    setup_i2c_master_dev(&dev_handle);
-    bme280_setup(&bme280_device, dev_handle);
+    setup_i2c_master_dev(&bme_dev_handle, I2C_NUM_0, 5, 6, 0x76);
+    bme280_setup(&bme280_device, bme_dev_handle);
 
     struct bme280_settings default_settings ={
         .osr_p = 1,
@@ -134,7 +174,10 @@ void app_main(void)
 
     bme280_init(&bme280_device);
     bme280_set_sensor_settings(BME280_SEL_ALL_SETTINGS, &default_settings, &bme280_device);
-    bme280_set_sensor_mode(BME280_POWERMODE_FORCED, &bme280_device);
+    bme280_set_sensor_mode(BME280_POWERMODE_NORMAL, &bme280_device);
 
+    setup_i2c_master_dev(&sgp_dev_handle, I2C_NUM_1, 15, 16, 0x58);
+
+    xTaskCreate(sgp30_measure_task, "measure task 1", 4096, NULL, 7, NULL);
     xTaskCreate(bme280_measure_task, "measure task", 4096, NULL, 5, NULL);
 }
