@@ -6,6 +6,7 @@
 #include "bme280_funs.h"
 #include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "portmacro.h"
 #include "sgp30.h"
@@ -24,12 +25,57 @@
 #define MAX_HTTP_OUTPUT_BUFFER 2048
 static const char *TAG = "HTTP_CLIENT";
 
+#define HTTP_HOST "192.168.116.237:8080"
+#define HTTP_POST_URL "http://192.168.116.237:8080/post"
+
+// I2C devices for the BME280 and SGP30
+i2c_master_dev_handle_t bme_dev_handle;
+i2c_master_dev_handle_t sgp_dev_handle;
+
+struct bme280_dev bme280_device;
+
+struct bme280_data sensor_data;
+
+struct sgp30_data sgp_data;
+static volatile uint32_t tick_count = 0;
+
+// Queues for transferring sensor data to the HTTP task
+QueueHandle_t bme_data_queue;
+QueueHandle_t sgp_data_queue;
+
+esp_http_client_handle_t client;
+static char response_buffer[MAX_HTTP_OUTPUT_BUFFER + 1] = {0};
+
 int MIN(int first, int second) {
     if (first < second) {
         return first;
     }
 
     return second;
+}
+
+static void setup_i2c_master_dev(i2c_master_dev_handle_t *dev_handle, uint8_t port, uint8_t scl, 
+        uint8_t sda, uint8_t dev_address) {
+
+    i2c_master_bus_config_t i2c_master_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = port,
+        .scl_io_num = scl,
+        .sda_io_num = sda,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+
+    i2c_master_bus_handle_t bus_handle;
+    i2c_new_master_bus(&i2c_master_config, &bus_handle);
+
+    i2c_device_config_t dev_cfg = {
+    .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+    .device_address = dev_address,
+    .scl_speed_hz = 100000,
+    };
+
+    i2c_master_bus_add_device(bus_handle, &dev_cfg, dev_handle);
 }
 
 // HTTP event handler - taken from the ESP-IDF HTTP client example
@@ -55,10 +101,6 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
             if (output_len == 0 && evt->user_data) {
                 memset(evt->user_data, 0, MAX_HTTP_OUTPUT_BUFFER);
             }
-            /*
-             *  Check for chunked encoding is added as the URL for chunked encoding used in this example returns binary data.
-             *  However, event handler can also be used in case chunked encoding is used.
-             */
             if (!esp_http_client_is_chunked_response(evt->client)) {
                 int copy_len = 0;
                 if (evt->user_data) {
@@ -117,47 +159,10 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
-static void setup_i2c_master_dev(i2c_master_dev_handle_t *dev_handle, uint8_t port, uint8_t scl, 
-        uint8_t sda, uint8_t dev_address) {
-
-    i2c_master_bus_config_t i2c_master_config = {
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .i2c_port = port,
-        .scl_io_num = scl,
-        .sda_io_num = sda,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-
-    i2c_master_bus_handle_t bus_handle;
-    i2c_new_master_bus(&i2c_master_config, &bus_handle);
-
-    i2c_device_config_t dev_cfg = {
-    .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-    .device_address = dev_address,
-    .scl_speed_hz = 100000,
-    };
-
-    i2c_master_bus_add_device(bus_handle, &dev_cfg, dev_handle);
-}
-
-i2c_master_dev_handle_t bme_dev_handle;
-i2c_master_dev_handle_t sgp_dev_handle;
-
-struct bme280_dev bme280_device;
-
-struct bme280_data sensor_data;
-
-struct sgp30_data sgp_data;
-static volatile uint32_t tick_count = 0;
-
-esp_http_client_handle_t client;
-static char response_buffer[MAX_HTTP_OUTPUT_BUFFER + 1] = {0};
-
 // Sets up the HTTP client
 esp_http_client_handle_t setup_http_client(char* response_buffer) {
     esp_http_client_config_t client_config = {
-        .host = "192.168.116.237:8080",
+        .host = HTTP_HOST,
         .path = "/post",
         .query = "esp",
         .event_handler = _http_event_handler,
@@ -170,7 +175,7 @@ esp_http_client_handle_t setup_http_client(char* response_buffer) {
 
 // Sends a post request to the HTTP server
 esp_err_t http_client_post(esp_http_client_handle_t client, char* post_data) {
-    esp_http_client_set_url(client, "http://192.168.116.237:8080/post");
+    esp_http_client_set_url(client, HTTP_POST_URL);
     esp_http_client_set_method(client, HTTP_METHOD_POST);
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_post_field(client, post_data, strlen(post_data));
@@ -181,9 +186,10 @@ esp_err_t http_client_post(esp_http_client_handle_t client, char* post_data) {
 void bme280_measure_task(void *pvParameter) {
     while (1) {
         if(bme280_get_sensor_data(BME280_ALL, &sensor_data, &bme280_device) == 0) {
-            printf("%f\n", sensor_data.pressure);
-            printf("%f\n", sensor_data.temperature);
-            printf("%f\n", sensor_data.humidity);
+            // printf("%f\n", sensor_data.pressure);
+            // printf("%f\n", sensor_data.temperature);
+            // printf("%f\n", sensor_data.humidity);
+            xQueueSendToBack(bme_data_queue, &sensor_data, 10);
         }
 
         vTaskDelay(1000/portTICK_PERIOD_MS);
@@ -215,8 +221,9 @@ void sgp30_measure_task(void *pvParameter) {
                 printf("Read failure");
                 continue;
             }
-            printf("CO2 concentration: %d\n", sgp_data.co2_eq);
-            printf("TVOC: %d\n", sgp_data.tvoc);
+            // printf("CO2 concentration: %d\n", sgp_data.co2_eq);
+            // printf("TVOC: %d\n", sgp_data.tvoc);
+            xQueueSendToBack(sgp_data_queue, &sgp_data, 10);
         }
 
         vTaskDelay(1000/portTICK_PERIOD_MS);
@@ -225,46 +232,47 @@ void sgp30_measure_task(void *pvParameter) {
 
 void http_task() {
     while (1) {
-        char* post_data = "{ \"temperature\" : 23.541, \"pressure\" : 132.123 }";
+        // Get sensor data
+        struct bme280_data bme_data;
+        struct sgp30_data sgp_data;
+
+        xQueueReceive(bme_data_queue, &bme_data, portMAX_DELAY);
+        xQueueReceive(sgp_data_queue, &sgp_data, portMAX_DELAY);
+
+        char* post_data;
+        asprintf(&post_data, "{ \"temperature\" : %.2f, \"pressure\" : %.2f }", bme_data.temperature, 
+                bme_data.pressure);
+
         esp_err_t outcome =  http_client_post(client, post_data);
         if (outcome == ESP_OK) {
             printf("Data posted");
         } else {
             printf("Data not sent");
         }
-        vTaskDelay(1000/portTICK_PERIOD_MS);
+
+        free(post_data);
     }
 }
 
 void app_main(void)
 {
+    // Setup Wi-Fi connection
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     ESP_ERROR_CHECK(example_connect());
 
-    esp_netif_t *netif = get_example_netif();
-    esp_netif_ip_info_t ip_info;
-    esp_netif_get_ip_info(netif, &ip_info);
-    printf("IP: " IPSTR "\n", IP2STR(&ip_info.ip));
-    printf("GW: " IPSTR "\n", IP2STR(&ip_info.gw));
-    printf("NETMASK: " IPSTR "\n", IP2STR(&ip_info.netmask));
+    // esp_netif_t *netif = get_example_netif();
+    // esp_netif_ip_info_t ip_info;
+    // esp_netif_get_ip_info(netif, &ip_info);
+    // printf("IP: " IPSTR "\n", IP2STR(&ip_info.ip));
+    // printf("GW: " IPSTR "\n", IP2STR(&ip_info.gw));
+    // printf("NETMASK: " IPSTR "\n", IP2STR(&ip_info.netmask));
 
     client = setup_http_client(response_buffer);
 
-    // // Print out Access Point Information
-    // wifi_ap_record_t ap_info;
-    // ESP_ERROR_CHECK(esp_wifi_sta_get_ap_info(&ap_info));
-    // printf("--- Access Point Information ---");
-    // ESP_LOG_BUFFER_HEX("MAC Address", ap_info.bssid, sizeof(ap_info.bssid));
-    // ESP_LOG_BUFFER_CHAR("SSID", ap_info.ssid, sizeof(ap_info.ssid));
-    // printf("Primary Channel: %d", ap_info.primary);
-    // printf("RSSI: %d", ap_info.rssi);
-
-    // ESP_ERROR_CHECK(example_disconnect());
-
-
+    // Initialise BME280
     setup_i2c_master_dev(&bme_dev_handle, I2C_NUM_0, 5, 6, 0x76);
     bme280_setup(&bme280_device, bme_dev_handle);
 
@@ -280,7 +288,11 @@ void app_main(void)
     bme280_set_sensor_settings(BME280_SEL_ALL_SETTINGS, &default_settings, &bme280_device);
     bme280_set_sensor_mode(BME280_POWERMODE_NORMAL, &bme280_device);
 
+    // Initialise SGP30
     setup_i2c_master_dev(&sgp_dev_handle, I2C_NUM_1, 15, 16, 0x58);
+
+    bme_data_queue = xQueueCreate(16, sizeof(struct bme280_data));
+    sgp_data_queue = xQueueCreate(16, sizeof(struct sgp30_data));
 
     xTaskCreate(sgp30_measure_task, "measure task 1", 4096, NULL, 7, NULL);
     xTaskCreate(bme280_measure_task, "measure task", 4096, NULL, 5, NULL);
