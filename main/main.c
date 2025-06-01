@@ -21,12 +21,17 @@
 #include "esp_http_client.h"
 #include "esp_tls.h"
 
+#include <esp_netif_sntp.h>
+#include <time.h>
+
 #define MAX_HTTP_RECV_BUFFER 512
 #define MAX_HTTP_OUTPUT_BUFFER 2048
 static const char *TAG = "HTTP_CLIENT";
 
 #define HTTP_HOST "192.168.116.237:8080"
 #define HTTP_POST_URL "http://192.168.116.237:8080/post"
+
+#define JSON_FORMAT_STRING "{ \"time\" : \"%s\", \"temperature\" : %.2f, \"pressure\" : %.2f, \"humidity\" : %.2f, \"co2Ppm\" : %d, \"tvoc\" : %d }"
 
 // I2C devices for the BME280 and SGP30
 i2c_master_dev_handle_t bme_dev_handle;
@@ -45,6 +50,10 @@ QueueHandle_t sgp_data_queue;
 
 esp_http_client_handle_t client;
 static char response_buffer[MAX_HTTP_OUTPUT_BUFFER + 1] = {0};
+
+time_t now;
+char strftime_buf[64];
+struct tm timeinfo;
 
 int MIN(int first, int second) {
     if (first < second) {
@@ -239,15 +248,23 @@ void http_task() {
         xQueueReceive(bme_data_queue, &bme_data, portMAX_DELAY);
         xQueueReceive(sgp_data_queue, &sgp_data, portMAX_DELAY);
 
+        // Set timezone
+        time(&now);
+        setenv("TZ", "CST-8", 1);
+        tzset();
+
+        localtime_r(&now, &timeinfo);
+        strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
+
         char* post_data;
-        asprintf(&post_data, "{ \"temperature\" : %.2f, \"pressure\" : %.2f }", bme_data.temperature, 
-                bme_data.pressure);
+        asprintf(&post_data, JSON_FORMAT_STRING, strftime_buf, bme_data.temperature, 
+                bme_data.pressure, bme_data.humidity, sgp_data.co2_eq, sgp_data.tvoc);
 
         esp_err_t outcome =  http_client_post(client, post_data);
         if (outcome == ESP_OK) {
-            printf("Data posted");
+            printf("Data posted\n");
         } else {
-            printf("Data not sent");
+            printf("Data not sent\n");
         }
 
         free(post_data);
@@ -262,6 +279,14 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     ESP_ERROR_CHECK(example_connect());
+
+    // Sync time
+    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_netif_sntp_init(&config);
+
+    if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000)) != ESP_OK) {
+        printf("Failed to update system time within 10s timeout");
+    }
 
     // esp_netif_t *netif = get_example_netif();
     // esp_netif_ip_info_t ip_info;
