@@ -81,4 +81,5 @@ C:/Users/jerem/IDFProjects/weather-station/esp-idf/spiffs/libspiffs.a
 C:/Users/jerem/IDFProjects/weather-station/esp-idf/touch_element/libtouch_element.a
 C:/Users/jerem/IDFProjects/weather-station/esp-idf/usb/libusb.a
 C:/Users/jerem/IDFProjects/weather-station/esp-idf/wifi_provisioning/libwifi_provisioning.a
+C:/Users/jerem/IDFProjects/weather-station/esp-idf/protocol_examples_common/libprotocol_examples_common.a
 C:/Users/jerem/IDFProjects/weather-station/esp-idf/main/libmain.a
