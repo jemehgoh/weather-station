@@ -24,6 +24,16 @@
 #include <esp_netif_sntp.h>
 #include <time.h>
 
+// I2C pin definition macros
+#define BME280_SCL_PIN 5
+#define BME280_SDA_PIN 6
+#define SGP30_SCL_PIN 15
+#define SGP30_SDA_PIN 16
+
+// I2C device addresses for sensors
+#define BME280_I2C_ADDRESS 0x76
+#define SGP30_I2C_ADDRESS 0x58
+
 #define MAX_HTTP_RECV_BUFFER 512
 #define MAX_HTTP_OUTPUT_BUFFER 2048
 static const char *TAG = "HTTP_CLIENT";
@@ -63,6 +73,15 @@ int MIN(int first, int second) {
     return second;
 }
 
+/**
+ * Sets up an I2C master device with a specified device handle, port, pins and slave address.
+ * 
+ * @param[inout] dev_handle Pointer to the I2C master device handle to be set up.
+ * @param[in] port The I2C port number to use (e.g., I2C_NUM_0, I2C_NUM_1).
+ * @param[in] scl The GPIO pin number for the SCL line.
+ * @param[in] sda The GPIO pin number for the SDA line.
+ * @param[in] dev_address The I2C slave address of the device.
+ */
 static void setup_i2c_master_dev(i2c_master_dev_handle_t *dev_handle, uint8_t port, uint8_t scl, 
         uint8_t sda, uint8_t dev_address) {
 
@@ -195,9 +214,6 @@ esp_err_t http_client_post(esp_http_client_handle_t client, char* post_data) {
 void bme280_measure_task(void *pvParameter) {
     while (1) {
         if(bme280_get_sensor_data(BME280_ALL, &sensor_data, &bme280_device) == 0) {
-            // printf("%f\n", sensor_data.pressure);
-            // printf("%f\n", sensor_data.temperature);
-            // printf("%f\n", sensor_data.humidity);
             xQueueSendToBack(bme_data_queue, &sensor_data, 10);
         }
 
@@ -205,6 +221,7 @@ void bme280_measure_task(void *pvParameter) {
     }
 }
 
+// Task for getting data from the SGP30
 void sgp30_measure_task(void *pvParameter) {
     while (1) {
         if (tick_count == 0) {
@@ -230,8 +247,6 @@ void sgp30_measure_task(void *pvParameter) {
                 printf("Read failure");
                 continue;
             }
-            // printf("CO2 concentration: %d\n", sgp_data.co2_eq);
-            // printf("TVOC: %d\n", sgp_data.tvoc);
             xQueueSendToBack(sgp_data_queue, &sgp_data, 10);
         }
 
@@ -239,6 +254,7 @@ void sgp30_measure_task(void *pvParameter) {
     }
 }
 
+// Task for sending data to the HTTP server
 void http_task() {
     while (1) {
         // Get sensor data
@@ -288,17 +304,10 @@ void app_main(void)
         printf("Failed to update system time within 10s timeout");
     }
 
-    // esp_netif_t *netif = get_example_netif();
-    // esp_netif_ip_info_t ip_info;
-    // esp_netif_get_ip_info(netif, &ip_info);
-    // printf("IP: " IPSTR "\n", IP2STR(&ip_info.ip));
-    // printf("GW: " IPSTR "\n", IP2STR(&ip_info.gw));
-    // printf("NETMASK: " IPSTR "\n", IP2STR(&ip_info.netmask));
-
     client = setup_http_client(response_buffer);
 
     // Initialise BME280
-    setup_i2c_master_dev(&bme_dev_handle, I2C_NUM_0, 5, 6, 0x76);
+    setup_i2c_master_dev(&bme_dev_handle, I2C_NUM_0, BME280_SCL_PIN, BME280_SDA_PIN, BME280_I2C_ADDRESS);
     bme280_setup(&bme280_device, bme_dev_handle);
 
     struct bme280_settings default_settings ={
@@ -314,7 +323,7 @@ void app_main(void)
     bme280_set_sensor_mode(BME280_POWERMODE_NORMAL, &bme280_device);
 
     // Initialise SGP30
-    setup_i2c_master_dev(&sgp_dev_handle, I2C_NUM_1, 15, 16, 0x58);
+    setup_i2c_master_dev(&sgp_dev_handle, I2C_NUM_1, SGP30_SCL_PIN, SGP30_SDA_PIN, SGP30_I2C_ADDRESS);
 
     bme_data_queue = xQueueCreate(16, sizeof(struct bme280_data));
     sgp_data_queue = xQueueCreate(16, sizeof(struct sgp30_data));
